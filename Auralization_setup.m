@@ -53,6 +53,7 @@ hand_state = 0;
 
 s_azim = 0;
 s_elev = 0;
+msrd_dist = 0.8;
 
 idx_pos = dsearchn(sourcePosition, [s_azim, s_elev]);
 HRIR = squeeze((hrtfData(idx_pos, :,:))); 
@@ -72,16 +73,20 @@ while true
         data = str2double(split(convertCharsToStrings(char(py_output)), ','));
         hand_state = data(1);
         azimuth = data(2);
+        source_dist = data(4);
     end
     
     if hand_state
         idx_pos = dsearchn(sourcePosition, [azimuth, 0]);
-        disp(['Azimuth: ' num2str(sourcePosition(idx_pos,1)), '  closed'])
+%         disp(['Azimuth: ' num2str(sourcePosition(idx_pos,1)), '  closed'])
         % Obtain a pair of HRTFs at the desired position.
         HRIR = squeeze((hrtfData(idx_pos, :,:))); 
+        % Calculate distance normalization                   
+        DistNorm = msrd_dist/source_dist;     
+        HRIR = HRIR .* DistNorm;
     else
-        disp(['Azimuth: ' num2str(sourcePosition(idx_pos,1)), '  open'])
-    end
+%         disp(['Azimuth: ' num2str(sourcePosition(idx_pos,1)), '  open'])
+    end     
     
 
     % Read audio from file   
