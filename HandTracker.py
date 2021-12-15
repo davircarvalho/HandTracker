@@ -1,3 +1,5 @@
+
+#%% 
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -22,9 +24,15 @@ one_euro_filter = OneEuroFilter(0, 0,
 # %% PPre-config
 window_name = 'MediaPipe Hands'
 cap = cv2.VideoCapture(0)
+# Bring window to the front 
 frame_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
 frame_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-cap.set(cv2.CAP_PROP_FPS, 60)
+# cap.set(cv2.CAP_PROP_FPS, 60)
+blank_image = np.zeros(shape= (int(frame_height), int(frame_width)))
+cv2.imshow(window_name,blank_image )
+cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
+
+
 
 
 # pseudo camera internals
@@ -64,7 +72,6 @@ PORT = 50060      # Arbitrary non-privileged port
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) 
 
 # %% Calculate finger angles
-
 def get_finger_angle(a,b,c):
   angle = get_triangle_angle(a, b, c)
   # Return state
@@ -88,11 +95,22 @@ def get_triangle_angle(a, b, c):
 def landmark2numpy(landmark):
     h = np.array([landmark.x, landmark.y, landmark.y])
     return h
-  
-     
-# %% RUN MODEL       
-with mp_hands.Hands( model_complexity=1, min_detection_confidence=0.7,
-                     min_tracking_confidence=0.7) as hands, \
+
+def calc_points_dist(a, b):
+    x1 = a.item(0)
+    y1 = a.item(1)
+    z1 = a.item(2)
+    x2 = b.item(0)
+    y2 = b.item(1)
+    z2 = b.item(2)
+    dist = np.sqrt((x2-x1)**2 + (y2-y1)**2 + (z2-z1)**2)
+    return (dist/100)
+
+
+#########################################################################################
+# %%######################### TRACKING MODELS ###########################################  
+with mp_hands.Hands( model_complexity=0, min_detection_confidence=0.5,
+                     min_tracking_confidence=0.5) as hands, \
                      mp_face_mesh.FaceMesh( min_detection_confidence=0.5,
                      min_tracking_confidence=0.5) as face_mesh:
   while cap.isOpened():
@@ -112,46 +130,41 @@ with mp_hands.Hands( model_complexity=1, min_detection_confidence=0.7,
     # Draw the hand annotations on the image.
     image.flags.writeable = True
     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    
+    
+# %% HAND TRACKING ###################################################################
+    hand_translation_vector = np.empty(shape=(0))
     if hand_results.multi_hand_landmarks:
       # Draw hand landmarks
-      # for hand_landmarks in hand_results.multi_hand_landmarks:
-      #   mp_drawing.draw_landmarks(
-      #       image,
-      #       hand_landmarks,
-      #       mp_hands.HAND_CONNECTIONS,
-      #       mp_drawing_styles.get_default_hand_landmarks_style(),
-      #       mp_drawing_styles.get_default_hand_connections_style())
+      for hand_landmarks in hand_results.multi_hand_landmarks:
+        mp_drawing.draw_landmarks(
+            image,
+            hand_landmarks,
+            mp_hands.HAND_CONNECTIONS)
 
-      # World ppoints 
-      h_model_landmarks = hand_results.multi_hand_world_landmarks[0]       
-      all_h_model_points = np.array([(lm.x,lm.y,lm.z) for lm in h_model_landmarks.landmark])
-      idx= [0,5,17, 18]
-      h_model_points = all_h_model_points[idx,]
-      
-      # Image points
+      h_model_landmarks = hand_results.multi_hand_world_landmarks[0]
       hand_landmarks = hand_results.multi_hand_landmarks[0]
-      all_h_landmarks = np.array([(lm.x,lm.y,lm.z) for lm in hand_landmarks.landmark])
-      h_landmarks = all_h_landmarks[idx,]
-      h_landmarks = h_landmarks.T      
+      h_model_points = []
+      h_landmarks = []
       
-      h_image_points = h_landmarks[0:2,:].T * np.array([frame_width, frame_height])[None,:]
-
-      hand_success, hand_rotation_vector, hand_translation_vector = cv2.solvePnP(h_model_points, 
+      dx = [0,5,17, 18]
+      for ii, (lw, lm) in enumerate(zip(h_model_landmarks.landmark, hand_landmarks.landmark)):
+        if ii in dx:
+          h_model_points.append([lw.x,lw.y,lw.z])
+          h_landmarks.append([lm.x,lm.y,lm.z])
+      h_model_points = np.array(h_model_points)
+      h_landmarks = np.array(h_landmarks)
+      
+      h_image_points = h_landmarks[:,0:2] * np.array([frame_width, frame_height])[None,:]
+      _, hand_rotation_vector, hand_translation_vector = cv2.solvePnP(h_model_points, 
                                                                             h_image_points, 
                                                                             camera_matrix, 
                                                                             dist_coeff, 
-                                                                            flags=cv2.SOLVEPNP_P3P)
-      if hand_success:
-        hand_translation_vector = hand_translation_vector*100
-        hand_translation_vector[2] = abs(hand_translation_vector[2])
-    
-        # Check if hand is open or closed 
-        wrist = landmark2numpy(hand_landmarks.landmark[0])  
-        finger_base = landmark2numpy(hand_landmarks.landmark[9])
-        finger_tip = landmark2numpy(hand_landmarks.landmark[12])  
-        hand_state = get_finger_angle(wrist, finger_base, finger_tip)
-      
-      
+                                                                            flags=cv2.SOLVEPNP_P3P)      
+    if hand_translation_vector.any():
+      hand_success = True
+    else:
+      hand_success = False
     
     
 # %% FACE TRACKING ###################################################
@@ -175,30 +188,44 @@ with mp_hands.Hands( model_complexity=1, min_detection_confidence=0.7,
         image = cv2.circle(image, tuple(pos), 2, (0, 255, 0), -1)
         
     # Flip the image horizontally for a selfie-view display.
-      image = cv2.flip(image, 1)
-      
+    image = cv2.flip(image, 1)
+    
+    
+######################### ID GESTURES AND RELATIVE POSITION ############################################################
+# %% Detect specific hand gestures
+    if hand_success:      
+        hand_translation_vector = hand_translation_vector*100
+        hand_translation_vector[2] = abs(hand_translation_vector[2])
+    
+        # Check if hand is open or closed 
+        wrist = landmark2numpy(hand_landmarks.landmark[0])  
+        finger_base = landmark2numpy(hand_landmarks.landmark[9])
+        finger_tip = landmark2numpy(hand_landmarks.landmark[12])  
+        hand_state = get_finger_angle(wrist, finger_base, finger_tip)
+
+
 # %% Calculate angles between hands and ears  
-    if hand_success and head_success:
+    if hand_success and face_results.multi_face_landmarks:
       face_normal = face_translation_vector.copy()
       face_normal[2] = -1 # negative to ensure the point is always behind the screen
       hand_azimuth = get_triangle_angle(face_normal.flatten(),
                                        face_translation_vector.flatten(),                                       
                                        hand_translation_vector.flatten())
 
-      # UDP courrier
+############################ DATA OUTPUT ####################################################
       if hand_translation_vector[0] < face_translation_vector[0]:
         hand_azimuth = -hand_azimuth
       hand_elevation = 0
-      hand_radius = round(abs(hand_translation_vector.item(2) - face_translation_vector.item(2))/100, 2)
+      hand_radius = calc_points_dist(face_translation_vector, hand_translation_vector)
       coords = [hand_azimuth, hand_elevation,  hand_radius]
-      # Filter 
-      # coords[0] =  data_filter.process(coords[0])
-      
+      # Filter       
       coords[0] = one_euro_filter(cont, coords[0])
       cont +=1
+      
+      # UDP courrier
       send_to_server(hand_state, coords) 
         
-      # Image: Write translation vectors
+      # Image: Write translation vectors (top left) 
       round_factor = 0
       txt = '{x}, {y}, {z}'.format(x = f"{round(hand_translation_vector.item(0), round_factor):+.1f}",
                                   y = f"{round(hand_translation_vector.item(1), round_factor):+.1f}",
@@ -210,12 +237,14 @@ with mp_hands.Hands( model_complexity=1, min_detection_confidence=0.7,
                                   z = f"{round(face_translation_vector.item(2), round_factor):+.1f}")
       image = cv2.putText(image, txt, (00, 40  ), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                         (255, 140, 20), 2, cv2.LINE_AA)   
+      txt = '{x}, {y}, {z}'.format(x = f"{coords[0]:+.1f}",
+                                  y = f"{coords[1]:+.1f}",
+                                  z = f"{coords[2]:+.2f}")
+      image = cv2.putText(image, txt, (00, 60  ), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                        (140, 0, 120), 2, cv2.LINE_AA)   
        
     # Show image
-    cv2.imshow('MediaPipe Hands', image)
-    
-    # Bring screen to the front 
-    cv2.setWindowProperty(window_name, cv2.WND_PROP_TOPMOST, 1)
+    cv2.imshow(window_name, image)
     
     # Kill the process by pressing 'Esc' or ressing 'quit'
     if cv2.waitKey(5) & 0xFF == 27:
