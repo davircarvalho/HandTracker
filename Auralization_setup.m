@@ -71,18 +71,22 @@ while true
     
     if ~isempty(py_output)
         data = str2double(split(convertCharsToStrings(char(py_output)), ','));
-        hand_state = data(1);
-        azimuth = data(2);
-        source_dist = data(4);
+        head_yaw = data(1);
+        head_pitch = data(2);
+        head_roll = data(3);
+        hand_state = data(4);
+        hand_azimuth = data(5);
+        hand_elevation = data(6);
+        hand_radius = data(7);
     end
     
     if hand_state
-        idx_pos = dsearchn(sourcePosition, [azimuth, 0]);
+        idx_pos = dsearchn(sourcePosition, [hand_azimuth, 0]);
 %         disp(['Azimuth: ' num2str(sourcePosition(idx_pos,1)), '  closed'])
         % Obtain a pair of HRTFs at the desired position.
         HRIR = squeeze((hrtfData(idx_pos, :,:))); 
         % Calculate distance normalization                   
-        DistNorm = msrd_dist/source_dist;     
+        DistNorm = msrd_dist/hand_radius;     
         HRIR = HRIR .* DistNorm;
     else
 %         disp(['Azimuth: ' num2str(sourcePosition(idx_pos,1)), '  open'])
@@ -95,7 +99,7 @@ while true
     % Apply HRTFs
     audioFiltered(:,1) = FIR{1}(audioIn, HRIR(1,:)); % Left
     audioFiltered(:,2) = FIR{2}(audioIn, HRIR(2,:)); % Right    
-    deviceWriter(squeeze(audioFiltered)); 
+%     deviceWriter(squeeze(audioFiltered)); 
 end
 release(sigsrc)
 release(deviceWriter)

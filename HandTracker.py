@@ -53,23 +53,8 @@ points_idx = list(set(points_idx))
 points_idx.sort()
 hand_success = False
 head_success = False
+hnd_coords = []
 
-# %% Send data to server
-def send_to_server(hand_state, coords):
-    try:
-      txt = '{state}, {azimuth}, {elevation}, {radius}'.format(state=hand_state, 
-                                                               azimuth=coords[0],
-                                                               elevation = coords[1],
-                                                               radius = coords[2])
-      s.sendto(txt.encode(), (IP,PORT)) #send message back
-    except:
-      print('Sending UDP failed!')
-
-# Initialize UDP server
-global s, IP, PORT
-IP = '127.0.0.1'  # Symbolic name meaning all available interfaces
-PORT = 50060      # Arbitrary non-privileged port
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) 
 
 # %% Calculate finger angles
 def get_finger_angle(a,b,c):
@@ -106,9 +91,54 @@ def calc_points_dist(a, b):
     dist = np.sqrt((x2-x1)**2 + (y2-y1)**2 + (z2-z1)**2)
     return (dist/100)
 
+def get_head_orientation():
+    rvec = face_rotation_vector
+    tvec = face_translation_vector
+    rmat = cv2.Rodrigues(rvec)[0]  
+    P = np.hstack((rmat,tvec)) # projection matrix
+    
+    # find euler angles 
+    euler_angles =  cv2.decomposeProjectionMatrix(P)[6]
+    pitch = euler_angles.item(0) 
+    yaw = euler_angles.item(1) 
+    roll = euler_angles.item(2) 
+
+    # Ajust coordinate ranges
+    if pitch < 0:
+      pitch = 180 + pitch
+    else:
+      pitch = pitch - 180
+
+    orientation = [round(yaw), round(pitch), round(roll)] 
+    return orientation
+
+
+# %% Send data to server
+def send_to_server(hnd_state, hnd_coords):
+    try:
+      head_orientation = get_head_orientation()
+      txt = '{head_yaw},{head_pitch}, {head_roll},{hand_state}, {hand_azim}, {hand_elev}, {hand_radius}'.format(
+              head_yaw = head_orientation[0],
+              head_pitch = head_orientation[1],
+              head_roll = head_orientation[2],
+              hand_state = hnd_state, 
+              hand_azim = hnd_coords[0],
+              hand_elev = hnd_coords[1],
+              hand_radius = hnd_coords[2])
+      s.sendto(txt.encode(), (IP,PORT)) #send message back
+    except:
+      print('Sending UDP failed!')
+
+# Initialize UDP server
+global s, IP, PORT
+IP = '127.0.0.1'  # Symbolic name meaning all available interfaces
+PORT = 50050      # Arbitrary non-privileged port
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) 
+
 
 #########################################################################################
 # %%######################### TRACKING MODELS ###########################################  
+global rotation_vector, translation_vector, hand_coords
 with mp_hands.Hands( model_complexity=0, min_detection_confidence=0.5,
                      min_tracking_confidence=0.5) as hands, \
                      mp_face_mesh.FaceMesh( min_detection_confidence=0.5,
@@ -161,7 +191,7 @@ with mp_hands.Hands( model_complexity=0, min_detection_confidence=0.5,
                                                                             camera_matrix, 
                                                                             dist_coeff, 
                                                                             flags=cv2.SOLVEPNP_P3P)      
-    if hand_translation_vector.any():
+    if hand_translation_vector is not None and hand_translation_vector.any():
       hand_success = True
     else:
       hand_success = False
@@ -178,15 +208,15 @@ with mp_hands.Hands( model_complexity=0, min_detection_confidence=0.5,
       metric_landmarks, pose_transform_mat = get_metric_landmarks(landmarks.copy(), pcf)
       model_points = metric_landmarks[0:3, points_idx].T
       
-      head_success, rotation_vector, face_translation_vector = cv2.solvePnP(model_points, image_points, camera_matrix, dist_coeff, flags=cv2.SOLVEPNP_ITERATIVE)
-      (nose_end_point2D, jacobian) = cv2.projectPoints(np.array([(0.0, 0.0, 15.0)]), rotation_vector, face_translation_vector, camera_matrix, dist_coeff)
+      _, face_rotation_vector, face_translation_vector = cv2.solvePnP(model_points, image_points, camera_matrix, dist_coeff, flags=cv2.SOLVEPNP_ITERATIVE)
+      (nose_end_point2D, jacobian) = cv2.projectPoints(np.array([(0.0, 0.0, 15.0)]), face_rotation_vector, face_translation_vector, camera_matrix, dist_coeff)
       
       L_ear = 132 # coordinate index
       R_ear = 361 # coordinate index
       for ii in (L_ear, R_ear):
         pos = np.array((frame_width*landmarks[0, ii], frame_height*landmarks[1, ii])).astype(np.int32)
         image = cv2.circle(image, tuple(pos), 2, (0, 255, 0), -1)
-        
+      head_success = True
     # Flip the image horizontally for a selfie-view display.
     image = cv2.flip(image, 1)
     
@@ -202,28 +232,32 @@ with mp_hands.Hands( model_complexity=0, min_detection_confidence=0.5,
         finger_base = landmark2numpy(hand_landmarks.landmark[9])
         finger_tip = landmark2numpy(hand_landmarks.landmark[12])  
         hand_state = get_finger_angle(wrist, finger_base, finger_tip)
-
-
-# %% Calculate angles between hands and ears  
-    if hand_success and face_results.multi_face_landmarks:
+    
+    if head_success and not hand_success:
+      hand_state = 0 # defaults to open hands      
+      if len(hnd_coords) < 3: # case there are no hand coords previously calculated (in another iteraction)
+        hnd_coords = [0,0,0]
+      send_to_server(hand_state, hnd_coords) 
+    
+    # Calculate angles between hands and ears  
+    if hand_success and head_success: # if hands and face are sucessful
       face_normal = face_translation_vector.copy()
       face_normal[2] = -1 # negative to ensure the point is always behind the screen
       hand_azimuth = get_triangle_angle(face_normal.flatten(),
                                        face_translation_vector.flatten(),                                       
                                        hand_translation_vector.flatten())
-
-############################ DATA OUTPUT ####################################################
+      ####################### DATA OUTPUT ####################################################
       if hand_translation_vector[0] < face_translation_vector[0]:
         hand_azimuth = -hand_azimuth
       hand_elevation = 0
       hand_radius = calc_points_dist(face_translation_vector, hand_translation_vector)
-      coords = [hand_azimuth, hand_elevation,  hand_radius]
+      hnd_coords = [hand_azimuth, hand_elevation,  hand_radius]
       # Filter       
-      coords[0] = one_euro_filter(cont, coords[0])
+      hnd_coords[0] = one_euro_filter(cont, hnd_coords[0])
       cont +=1
       
       # UDP courrier
-      send_to_server(hand_state, coords) 
+      send_to_server(hand_state, hnd_coords) 
         
       # Image: Write translation vectors (top left) 
       round_factor = 0
@@ -237,9 +271,9 @@ with mp_hands.Hands( model_complexity=0, min_detection_confidence=0.5,
                                   z = f"{round(face_translation_vector.item(2), round_factor):+.1f}")
       image = cv2.putText(image, txt, (00, 40  ), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                         (255, 140, 20), 2, cv2.LINE_AA)   
-      txt = '{x}, {y}, {z}'.format(x = f"{coords[0]:+.1f}",
-                                  y = f"{coords[1]:+.1f}",
-                                  z = f"{coords[2]:+.2f}")
+      txt = '{x}, {y}, {z}'.format(x = f"{hnd_coords[0]:+.1f}",
+                                  y = f"{hnd_coords[1]:+.1f}",
+                                  z = f"{hnd_coords[2]:+.2f}")
       image = cv2.putText(image, txt, (00, 60  ), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                         (140, 0, 120), 2, cv2.LINE_AA)   
        
