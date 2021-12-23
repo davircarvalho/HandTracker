@@ -109,7 +109,8 @@ def get_head_orientation():
     else:
       pitch = pitch - 180
 
-    orientation = [round(yaw), round(pitch), round(roll)] 
+    orientation = [round(yaw), round(pitch), round(roll),
+                   tvec[0][0]/100, tvec[1][0]/100, tvec[2][0]/100] 
     return orientation
 
 
@@ -117,15 +118,21 @@ def get_head_orientation():
 def send_to_server(hnd_state, hnd_coords):
     try:
       head_orientation = get_head_orientation()
-      txt = '{head_yaw},{head_pitch}, {head_roll},{hand_state}, {hand_azim}, {hand_elev}, {hand_radius}'.format(
+      txt = '''{head_yaw},{head_pitch}, {head_roll},
+                {head_x}, {head_y}, {head_z}, 
+                {hand_state}, {hand_azim}, {hand_elev}, {hand_radius}'''.format(
               head_yaw = head_orientation[0],
               head_pitch = head_orientation[1],
               head_roll = head_orientation[2],
+              head_x = head_orientation[3],
+              head_y = head_orientation[4],
+              head_z = head_orientation[5],
               hand_state = hnd_state, 
               hand_azim = hnd_coords[0],
               hand_elev = hnd_coords[1],
               hand_radius = hnd_coords[2])
       s.sendto(txt.encode(), (IP,PORT)) #send message back
+      print(txt)
     except:
       print('Sending UDP failed!')
 
@@ -246,10 +253,15 @@ with mp_hands.Hands( model_complexity=0, min_detection_confidence=0.5,
       hand_azimuth = get_triangle_angle(face_normal.flatten(),
                                        face_translation_vector.flatten(),                                       
                                        hand_translation_vector.flatten())
+      face_above = face_translation_vector.copy()
+      face_above[1] = -100
+      hand_elevation = 90-get_triangle_angle(face_translation_vector.flatten(), 
+                                          face_above.flatten(),                                      
+                                       hand_translation_vector.flatten())
       ####################### DATA OUTPUT ####################################################
       if hand_translation_vector[0] < face_translation_vector[0]:
         hand_azimuth = -hand_azimuth
-      hand_elevation = 0
+      # hand_elevation = 0
       hand_radius = calc_points_dist(face_translation_vector, hand_translation_vector)
       hnd_coords = [hand_azimuth, hand_elevation,  hand_radius]
       # Filter       
