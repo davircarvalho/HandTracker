@@ -128,11 +128,10 @@ def send_to_server(hnd_state, hnd_coords):
               head_y = head_orientation[4],
               head_z = head_orientation[5],
               hand_state = hnd_state, 
-              hand_azim = hnd_coords[0],
+              hand_azim = hnd_coords[0]+head_orientation[0],
               hand_elev = hnd_coords[1],
               hand_radius = hnd_coords[2])
       s.sendto(txt.encode(), (IP,PORT)) #send message back
-      print(txt)
     except:
       print('Sending UDP failed!')
 
